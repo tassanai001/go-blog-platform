@@ -13,6 +13,7 @@ import (
     "go-blog-platform/internal/constants"
     "go-blog-platform/internal/handlers"
     "go-blog-platform/internal/middleware"
+    "go-blog-platform/internal/services"
 )
 
 func main() {
@@ -38,17 +39,28 @@ func main() {
     // Get database instance
     db := client.Database(cfg.MongoDB.Database)
 
+    // Initialize services
+    emailService := services.NewEmailService(
+        cfg.SMTP.Host,
+        cfg.SMTP.Port,
+        cfg.SMTP.Username,
+        cfg.SMTP.Password,
+        cfg.SMTP.FromEmail,
+    )
+
     // Initialize router
     r := gin.Default()
 
     // Initialize handlers
     postHandler := handlers.NewPostHandler(db)
-    userHandler := handlers.NewUserHandler(db, cfg.JWT.Secret)
+    userHandler := handlers.NewUserHandler(db, cfg.JWT.Secret, emailService, cfg.BaseURL)
     profileHandler := handlers.NewProfileHandler(db)
 
     // Public routes
     r.POST("/api/register", userHandler.Register)
     r.POST("/api/login", userHandler.Login)
+    r.POST("/api/password-reset/request", userHandler.RequestPasswordReset)
+    r.POST("/api/password-reset/reset", userHandler.ResetPassword)
     r.GET("/api/profiles/:id", profileHandler.GetProfile) // Public profile view
 
     // Protected routes

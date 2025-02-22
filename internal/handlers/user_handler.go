@@ -2,6 +2,8 @@ package handlers
 
 import (
     "context"
+    "fmt"
+    "log"
     "net/http"
     "time"
 
@@ -10,14 +12,29 @@ import (
     "go.mongodb.org/mongo-driver/bson"
     "go.mongodb.org/mongo-driver/bson/primitive"
     "go.mongodb.org/mongo-driver/mongo"
-    
+    "golang.org/x/crypto/bcrypt"
+
     "go-blog-platform/internal/models"
     "go-blog-platform/internal/constants"
+    "go-blog-platform/internal/services"
 )
 
 type UserHandler struct {
-    collection *mongo.Collection
-    jwtSecret  []byte
+    collection          *mongo.Collection
+    resetTokens         *mongo.Collection
+    jwtSecret          []byte
+    emailService       *services.EmailService
+    baseURL           string
+}
+
+func NewUserHandler(db *mongo.Database, jwtSecret string, emailService *services.EmailService, baseURL string) *UserHandler {
+    return &UserHandler{
+        collection:    db.Collection("users"),
+        resetTokens:   db.Collection("password_reset_tokens"),
+        jwtSecret:     []byte(jwtSecret),
+        emailService:  emailService,
+        baseURL:      baseURL,
+    }
 }
 
 type LoginRequest struct {
@@ -36,14 +53,15 @@ type UpdateRoleRequest struct {
     Role string `json:"role" binding:"required"`
 }
 
-func NewUserHandler(db *mongo.Database, jwtSecret string) *UserHandler {
-    return &UserHandler{
-        collection: db.Collection("users"),
-        jwtSecret:  []byte(jwtSecret),
-    }
+type RequestPasswordResetRequest struct {
+    Email string `json:"email" binding:"required,email"`
 }
 
-// ListUsers returns a list of all users (admin only)
+type ResetPasswordRequest struct {
+    Token    string `json:"token" binding:"required"`
+    Password string `json:"password" binding:"required,min=6"`
+}
+
 func (h *UserHandler) ListUsers(c *gin.Context) {
     ctx := context.Background()
     cursor, err := h.collection.Find(ctx, bson.M{})
@@ -227,4 +245,119 @@ func (h *UserHandler) Login(c *gin.Context) {
             "role":     user.Role,
         },
     })
+}
+
+// RequestPasswordReset initiates the password reset process
+func (h *UserHandler) RequestPasswordReset(c *gin.Context) {
+    var req RequestPasswordResetRequest
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+
+    // Find user by email
+    ctx := context.Background()
+    var user models.User
+    err := h.collection.FindOne(ctx, bson.M{"email": req.Email}).Decode(&user)
+    if err == mongo.ErrNoDocuments {
+        // Don't reveal whether the email exists
+        c.JSON(http.StatusOK, gin.H{"message": "If the email exists, a reset link will be sent"})
+        return
+    }
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+        return
+    }
+
+    // Generate reset token
+    token := primitive.NewObjectID().Hex()
+    resetToken := models.PasswordResetToken{
+        ID:        primitive.NewObjectID(),
+        UserID:    user.ID,
+        Token:     token,
+        ExpiresAt: time.Now().Add(1 * time.Hour),
+        Used:      false,
+        CreatedAt: time.Now(),
+    }
+
+    // Save reset token
+    _, err = h.resetTokens.InsertOne(ctx, resetToken)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create reset token"})
+        return
+    }
+
+    // Generate reset link
+    resetLink := fmt.Sprintf("%s/reset-password?token=%s", h.baseURL, token)
+
+    // Send reset email
+    err = h.emailService.SendPasswordResetEmail(user.Email, resetLink)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send reset email"})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{"message": "If the email exists, a reset link will be sent"})
+}
+
+// ResetPassword handles the actual password reset
+func (h *UserHandler) ResetPassword(c *gin.Context) {
+    var req ResetPasswordRequest
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+
+    ctx := context.Background()
+
+    // Find and validate reset token
+    var resetToken models.PasswordResetToken
+    err := h.resetTokens.FindOne(ctx, bson.M{
+        "token": req.Token,
+        "used":  false,
+        "expires_at": bson.M{"$gt": time.Now()},
+    }).Decode(&resetToken)
+
+    if err != nil {
+        if err == mongo.ErrNoDocuments {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired reset token"})
+            return
+        }
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+        return
+    }
+
+    // Hash new password
+    hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+        return
+    }
+
+    // Update user's password
+    _, err = h.collection.UpdateOne(
+        ctx,
+        bson.M{"_id": resetToken.UserID},
+        bson.M{"$set": bson.M{
+            "password":   string(hashedPassword),
+            "updated_at": time.Now(),
+        }},
+    )
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
+        return
+    }
+
+    // Mark reset token as used
+    _, err = h.resetTokens.UpdateOne(
+        ctx,
+        bson.M{"_id": resetToken.ID},
+        bson.M{"$set": bson.M{"used": true}},
+    )
+    if err != nil {
+        // Log this error but don't return it to the user since the password was updated
+        log.Printf("Failed to mark reset token as used: %v", err)
+    }
+
+    c.JSON(http.StatusOK, gin.H{"message": "Password has been reset successfully"})
 }
