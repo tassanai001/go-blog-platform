@@ -2,9 +2,6 @@ package services
 
 import (
 	"fmt"
-	"image"
-	"image/jpeg"
-	"image/png"
 	"io"
 	"mime/multipart"
 	"os"
@@ -17,35 +14,31 @@ import (
 )
 
 type MediaService struct {
-	uploadDir      string
-	allowedTypes   []string
-	maxFileSize    int64
-	thumbnailSizes map[string]struct{ width, height int }
+	uploadDir string
+	baseURL   string
 }
 
-func NewMediaService(uploadDir string) *MediaService {
+type ThumbnailInfo struct {
+	Size string
+	Path string
+}
+
+func NewMediaService(uploadDir string, baseURL string) *MediaService {
+	// Create uploads directory if it doesn't exist
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		panic(fmt.Sprintf("Failed to create upload directory: %v", err))
+	}
+
 	return &MediaService{
 		uploadDir: uploadDir,
-		allowedTypes: []string{
-			"image/jpeg",
-			"image/png",
-			"image/gif",
-			"image/webp",
-		},
-		maxFileSize: 10 * 1024 * 1024, // 10MB
-		thumbnailSizes: map[string]struct{ width, height int }{
-			"small":  {width: 150, height: 150},
-			"medium": {width: 300, height: 300},
-			"large":  {width: 600, height: 600},
-		},
+		baseURL:   baseURL,
 	}
 }
 
-// ValidateFile checks if the file is valid
 func (s *MediaService) ValidateFile(file *multipart.FileHeader) error {
-	// Check file size
-	if file.Size > s.maxFileSize {
-		return fmt.Errorf("file size exceeds maximum allowed size of %d bytes", s.maxFileSize)
+	// Check file size (10MB limit)
+	if file.Size > 10*1024*1024 {
+		return fmt.Errorf("file size exceeds 10MB limit")
 	}
 
 	// Open the file
@@ -55,7 +48,7 @@ func (s *MediaService) ValidateFile(file *multipart.FileHeader) error {
 	}
 	defer src.Close()
 
-	// Read the first 512 bytes to detect the content type
+	// Read the first 512 bytes to detect content type
 	buffer := make([]byte, 512)
 	_, err = src.Read(buffer)
 	if err != nil && err != io.EOF {
@@ -69,25 +62,16 @@ func (s *MediaService) ValidateFile(file *multipart.FileHeader) error {
 	}
 
 	// Detect MIME type
-	mtype := mimetype.Detect(buffer)
-	allowed := false
-	for _, t := range s.allowedTypes {
-		if mtype.String() == t {
-			allowed = true
-			break
-		}
-	}
-
-	if !allowed {
-		return fmt.Errorf("file type %s is not allowed", mtype.String())
+	mime := mimetype.Detect(buffer)
+	if !strings.HasPrefix(mime.String(), "image/") {
+		return fmt.Errorf("invalid file type: only images are allowed")
 	}
 
 	return nil
 }
 
-// SaveFile saves the uploaded file and creates thumbnails if it's an image
-func (s *MediaService) SaveFile(file *multipart.FileHeader, userID string) (string, []struct{ Size, Path string }, error) {
-	// Create user upload directory if it doesn't exist
+func (s *MediaService) SaveFile(file *multipart.FileHeader, userID string) (string, []ThumbnailInfo, error) {
+	// Create user directory if it doesn't exist
 	userDir := filepath.Join(s.uploadDir, userID)
 	if err := os.MkdirAll(userDir, 0755); err != nil {
 		return "", nil, err
@@ -96,7 +80,7 @@ func (s *MediaService) SaveFile(file *multipart.FileHeader, userID string) (stri
 	// Generate unique filename
 	ext := filepath.Ext(file.Filename)
 	filename := fmt.Sprintf("%d%s", time.Now().UnixNano(), ext)
-	filepath := filepath.Join(userDir, filename)
+	filePath := filepath.Join(userDir, filename)
 
 	// Open source file
 	src, err := file.Open()
@@ -106,121 +90,102 @@ func (s *MediaService) SaveFile(file *multipart.FileHeader, userID string) (stri
 	defer src.Close()
 
 	// Create destination file
-	dst, err := os.Create(filepath)
+	dst, err := os.Create(filePath)
 	if err != nil {
 		return "", nil, err
 	}
 	defer dst.Close()
 
-	// Copy the uploaded file
+	// Copy file contents
 	if _, err = io.Copy(dst, src); err != nil {
 		return "", nil, err
 	}
 
-	// If it's an image, create thumbnails
-	thumbnails := []struct{ Size, Path string }{}
-	if isImage := s.isImageFile(file.Filename); isImage {
-		thumbnails, err = s.createThumbnails(filepath, userDir, filename)
-		if err != nil {
-			// Log the error but don't fail the upload
-			fmt.Printf("Error creating thumbnails: %v\n", err)
-		}
+	// Generate thumbnails for images
+	thumbnails, err := s.generateThumbnails(filePath, userID)
+	if err != nil {
+		// Log the error but don't fail the upload
+		fmt.Printf("Failed to generate thumbnails: %v\n", err)
 	}
 
-	return filepath, thumbnails, nil
+	return filePath, thumbnails, nil
 }
 
-// isImageFile checks if the file is an image based on extension
-func (s *MediaService) isImageFile(filename string) bool {
-	ext := strings.ToLower(filepath.Ext(filename))
-	return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".webp"
-}
-
-// createThumbnails generates thumbnails for the image
-func (s *MediaService) createThumbnails(originalPath, userDir, filename string) ([]struct{ Size, Path string }, error) {
-	// Open the original image
-	src, err := imaging.Open(originalPath)
+func (s *MediaService) generateThumbnails(sourcePath string, userID string) ([]ThumbnailInfo, error) {
+	// Open the source image
+	src, err := imaging.Open(sourcePath)
 	if err != nil {
 		return nil, err
 	}
 
-	thumbnails := []struct{ Size, Path string }{}
-	baseFilename := strings.TrimSuffix(filename, filepath.Ext(filename))
+	// Define thumbnail sizes
+	sizes := map[string]int{
+		"small":  150,
+		"medium": 300,
+		"large":  600,
+	}
 
-	// Create thumbnails for each size
-	for size, dimensions := range s.thumbnailSizes {
-		thumbnailFilename := fmt.Sprintf("%s_%s%s", baseFilename, size, filepath.Ext(filename))
-		thumbnailPath := filepath.Join(userDir, thumbnailFilename)
+	var thumbnails []ThumbnailInfo
 
-		// Resize the image
-		thumbnail := imaging.Fit(src, dimensions.width, dimensions.height, imaging.Lanczos)
+	// Generate thumbnails for each size
+	for size, dimension := range sizes {
+		// Create thumbnail filename
+		ext := filepath.Ext(sourcePath)
+		filename := fmt.Sprintf("%d_%s%s", time.Now().UnixNano(), size, ext)
+		thumbPath := filepath.Join(s.uploadDir, userID, "thumbnails", filename)
 
-		// Save the thumbnail
-		err = imaging.Save(thumbnail, thumbnailPath)
+		// Create thumbnails directory if it doesn't exist
+		thumbDir := filepath.Dir(thumbPath)
+		if err := os.MkdirAll(thumbDir, 0755); err != nil {
+			return thumbnails, err
+		}
+
+		// Resize image
+		thumb := imaging.Resize(src, dimension, dimension, imaging.Lanczos)
+
+		// Save thumbnail
+		err = imaging.Save(thumb, thumbPath)
 		if err != nil {
 			return thumbnails, err
 		}
 
-		thumbnails = append(thumbnails, struct{ Size, Path string }{Size: size, Path: thumbnailPath})
+		thumbnails = append(thumbnails, ThumbnailInfo{
+			Size: size,
+			Path: thumbPath,
+		})
 	}
 
 	return thumbnails, nil
 }
 
-// DeleteFile removes a file and its thumbnails
-func (s *MediaService) DeleteFile(filePath string) error {
-	// Delete the original file
-	if err := os.Remove(filePath); err != nil {
+func (s *MediaService) DeleteFile(path string) error {
+	// Delete the main file
+	err := os.Remove(path)
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
-	// If it's an image, delete thumbnails
-	if s.isImageFile(filePath) {
-		dirPath := filepath.Dir(filePath)
-		fileName := filepath.Base(filePath)
-		fileExt := filepath.Ext(fileName)
-		baseName := strings.TrimSuffix(fileName, fileExt)
+	// Try to delete thumbnails
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
 
-		for size := range s.thumbnailSizes {
-			thumbnailPath := filepath.Join(dirPath, fmt.Sprintf("%s_%s%s", baseName, size, fileExt))
-			if err := os.Remove(thumbnailPath); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("failed to delete thumbnail %s: %w", thumbnailPath, err)
-			}
+	// Delete thumbnail directory
+	thumbDir := filepath.Join(dir, "thumbnails")
+	entries, err := os.ReadDir(thumbDir)
+	if err != nil {
+		// Ignore if thumbnail directory doesn't exist
+		return nil
+	}
+
+	// Delete all thumbnails that start with the same name
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), name+"_") {
+			thumbPath := filepath.Join(thumbDir, entry.Name())
+			_ = os.Remove(thumbPath)
 		}
 	}
 
 	return nil
-}
-
-// OptimizeImage compresses and optimizes the image
-func (s *MediaService) OptimizeImage(path string) error {
-	// Open the image
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	// Decode the image
-	img, format, err := image.Decode(file)
-	if err != nil {
-		return err
-	}
-
-	// Create a new file for the optimized image
-	out, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	// Encode with optimization settings based on format
-	switch format {
-	case "jpeg":
-		return jpeg.Encode(out, img, &jpeg.Options{Quality: 85})
-	case "png":
-		return png.Encode(out, img)
-	default:
-		return fmt.Errorf("unsupported image format: %s", format)
-	}
 }

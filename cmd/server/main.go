@@ -56,19 +56,19 @@ func main() {
         cfg.SMTP.Password,
         cfg.SMTP.FromEmail,
     )
-    mediaService := services.NewMediaService(uploadsDir)
+    mediaService := services.NewMediaService(uploadsDir, cfg.BaseURL)
+
+    // Initialize handlers
+    postHandler := handlers.NewPostHandler(db, mediaService)
+    userHandler := handlers.NewUserHandler(db, cfg.JWT.Secret, emailService, mediaService, cfg.BaseURL)
+    profileHandler := handlers.NewProfileHandler(db)
+    mediaHandler := handlers.NewMediaHandler(db, mediaService, cfg.BaseURL)
 
     // Initialize router
     r := gin.Default()
 
     // Serve static files
     r.Use(static.Serve("/media", static.LocalFile(uploadsDir, false)))
-
-    // Initialize handlers
-    postHandler := handlers.NewPostHandler(db)
-    userHandler := handlers.NewUserHandler(db, cfg.JWT.Secret, emailService, cfg.BaseURL)
-    profileHandler := handlers.NewProfileHandler(db)
-    mediaHandler := handlers.NewMediaHandler(db, mediaService, cfg.BaseURL)
 
     // Public routes
     r.POST("/api/register", userHandler.Register)

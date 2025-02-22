@@ -10,6 +10,7 @@ import (
     "time"
 
     "github.com/gin-gonic/gin"
+    "github.com/golang-jwt/jwt/v5"
     "go.mongodb.org/mongo-driver/bson"
     "go.mongodb.org/mongo-driver/bson/primitive"
     "go.mongodb.org/mongo-driver/mongo"
@@ -20,22 +21,20 @@ import (
 )
 
 type UserHandler struct {
-    collection          *mongo.Collection
-    resetTokens         *mongo.Collection
-    jwtSecret          []byte
-    emailService       *services.EmailService
-    mediaService       *services.MediaService
-    baseURL           string
+    collection   *mongo.Collection
+    jwtSecret   string
+    emailService *services.EmailService
+    mediaService *services.MediaService
+    baseURL     string
 }
 
 func NewUserHandler(db *mongo.Database, jwtSecret string, emailService *services.EmailService, mediaService *services.MediaService, baseURL string) *UserHandler {
     return &UserHandler{
-        collection:    db.Collection("users"),
-        resetTokens:   db.Collection("password_reset_tokens"),
-        jwtSecret:     []byte(jwtSecret),
-        emailService:  emailService,
-        mediaService:  mediaService,
-        baseURL:      baseURL,
+        collection:   db.Collection("users"),
+        jwtSecret:   jwtSecret,
+        emailService: emailService,
+        mediaService: mediaService,
+        baseURL:     baseURL,
     }
 }
 
@@ -447,40 +446,43 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 }
 
 func (h *UserHandler) Login(c *gin.Context) {
-    var req LoginRequest
-    if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+    var loginData struct {
+        Email    string `json:"email" binding:"required,email"`
+        Password string `json:"password" binding:"required"`
+    }
+
+    if err := c.ShouldBindJSON(&loginData); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
         return
     }
 
     // Find user by email
-    ctx := context.Background()
     var user models.User
-    err := h.collection.FindOne(ctx, bson.M{"email": req.Email}).Decode(&user)
-    if err == mongo.ErrNoDocuments {
-        c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-        return
-    }
+    err := h.collection.FindOne(context.Background(), bson.M{"email": loginData.Email}).Decode(&user)
     if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+        if err == mongo.ErrNoDocuments {
+            c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+            return
+        }
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch user"})
         return
     }
 
-    // Check password
-    if err := user.ComparePassword(req.Password); err != nil {
-        c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+    // Compare passwords
+    if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(loginData.Password)); err != nil {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
         return
     }
 
     // Generate JWT token
     token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-        "user_id": user.ID.Hex(),
-        "email":   user.Email,
-        "role":    user.Role,
-        "exp":     time.Now().Add(24 * time.Hour).Unix(),
+        "id":    user.ID.Hex(),
+        "email": user.Email,
+        "role":  user.Role,
+        "exp":   time.Now().Add(24 * time.Hour).Unix(),
     })
 
-    tokenString, err := token.SignedString(h.jwtSecret)
+    tokenString, err := token.SignedString([]byte(h.jwtSecret))
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
         return
@@ -493,6 +495,7 @@ func (h *UserHandler) Login(c *gin.Context) {
             "username": user.Username,
             "email":    user.Email,
             "role":     user.Role,
+            "profile":  user.Profile,
         },
     })
 }
@@ -531,7 +534,7 @@ func (h *UserHandler) RequestPasswordReset(c *gin.Context) {
     }
 
     // Save reset token
-    _, err = h.resetTokens.InsertOne(ctx, resetToken)
+    _, err = h.collection.InsertOne(ctx, resetToken)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create reset token"})
         return
@@ -562,7 +565,7 @@ func (h *UserHandler) ResetPassword(c *gin.Context) {
 
     // Find and validate reset token
     var resetToken models.PasswordResetToken
-    err := h.resetTokens.FindOne(ctx, bson.M{
+    err := h.collection.FindOne(ctx, bson.M{
         "token": req.Token,
         "used":  false,
         "expires_at": bson.M{"$gt": time.Now()},
@@ -599,7 +602,7 @@ func (h *UserHandler) ResetPassword(c *gin.Context) {
     }
 
     // Mark reset token as used
-    _, err = h.resetTokens.UpdateOne(
+    _, err = h.collection.UpdateOne(
         ctx,
         bson.M{"_id": resetToken.ID},
         bson.M{"$set": bson.M{"used": true}},
