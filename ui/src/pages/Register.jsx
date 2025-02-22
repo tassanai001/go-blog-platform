@@ -19,6 +19,7 @@ const Register = () => {
 
   const [formData, setFormData] = useState({
     username: '',
+    fullName: '',
     email: '',
     password: '',
     confirmPassword: '',
@@ -47,6 +48,7 @@ const Register = () => {
   };
 
   const handleSubmit = async (e) => {
+    debugger
     e.preventDefault();
     if (!validateForm()) return;
 
@@ -83,6 +85,16 @@ const Register = () => {
             label="Username"
             name="username"
             value={formData.username}
+            onChange={handleChange}
+            required
+            margin="normal"
+          />
+
+          <TextField
+            fullWidth
+            label="Full Name"
+            name="fullName"
+            value={formData.fullName}
             onChange={handleChange}
             required
             margin="normal"

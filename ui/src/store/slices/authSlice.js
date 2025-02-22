@@ -25,23 +25,33 @@ export const login = createAsyncThunk(
       localStorage.setItem('token', response.data.token);
       return response.data;
     } catch (error) {
-      return rejectWithValue(error.response.data);
+      return rejectWithValue(
+        error.response?.data?.error ||
+        error.response?.data ||
+        'An error occurred during login'
+      );
     }
   }
 );
 
 export const register = createAsyncThunk(
   'auth/register',
-  async ({ username, email, password }, { rejectWithValue }) => {
+  async ({ username, email, password, fullName }, { rejectWithValue }) => {
     try {
       const response = await axios.post(`${API_URL}/auth/register`, {
         username,
         email,
         password,
+        fullName,
       });
       return response.data;
     } catch (error) {
-      return rejectWithValue(error.response.data);
+      console.error('Registration error:', error);
+      return rejectWithValue(
+        error.response?.data?.error ||
+        error.response?.data ||
+        'An error occurred during registration'
+      );
     }
   }
 );
@@ -53,7 +63,11 @@ export const updateProfile = createAsyncThunk(
       const response = await api.put('/users/profile', profileData);
       return response.data;
     } catch (error) {
-      return rejectWithValue(error.response.data);
+      return rejectWithValue(
+        error.response?.data?.error ||
+        error.response?.data ||
+        'Failed to update profile'
+      );
     }
   }
 );
@@ -94,7 +108,7 @@ const authSlice = createSlice({
       })
       .addCase(login.rejected, (state, action) => {
         state.loading = false;
-        state.error = action.payload?.error || 'Login failed';
+        state.error = action.payload || 'Login failed';
       })
       .addCase(register.pending, (state) => {
         state.loading = true;
@@ -105,7 +119,7 @@ const authSlice = createSlice({
       })
       .addCase(register.rejected, (state, action) => {
         state.loading = false;
-        state.error = action.payload?.error || 'Registration failed';
+        state.error = action.payload || 'Registration failed';
       })
       .addCase(updateProfile.pending, (state) => {
         state.loading = true;
@@ -120,7 +134,7 @@ const authSlice = createSlice({
       })
       .addCase(updateProfile.rejected, (state, action) => {
         state.loading = false;
-        state.error = action.payload?.error || 'Failed to update profile';
+        state.error = action.payload || 'Failed to update profile';
       });
   },
 });
