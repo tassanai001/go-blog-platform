@@ -52,6 +52,25 @@ go run cmd/server/main.go
 - `PUT /api/posts/:id` - Update a post (Author, Admin)
 - `DELETE /api/posts/:id` - Delete a post (Admin)
 
+### Post Management with Media
+
+Posts can include a featured image and a gallery of images. When creating or updating a post, you can include media files:
+
+```bash
+# Create a post with media
+POST /api/posts
+Content-Type: multipart/form-data
+Authorization: Bearer YOUR_JWT_TOKEN
+
+Form Data:
+- title: Post title
+- content: Post content
+- status: published/draft
+- tags[]: tag1, tag2, etc.
+- featured_image: Single image file
+- gallery[]: Multiple image files
+```
+
 ### Author Routes
 - `GET /api/author/drafts` - List author's drafts
 - `POST /api/author/drafts` - Create a draft
@@ -60,6 +79,64 @@ go run cmd/server/main.go
 - `GET /api/admin/users` - List all users
 - `PUT /api/admin/users/:id/role` - Update user role
 - `DELETE /api/admin/users/:id` - Delete user
+
+### User Profile with Media
+
+User profiles support avatar and cover images. These can be set during registration or updated later:
+
+#### Register with Profile Images
+```bash
+POST /api/auth/register
+Content-Type: multipart/form-data
+
+Form Data:
+- username: Username
+- password: Password
+- email: user@example.com
+- full_name: Full Name
+- avatar: Profile picture
+- cover_image: Profile cover image
+- bio: User bio
+- location: User location
+- website: Personal website
+- social_links[twitter]: Twitter handle
+- social_links[github]: GitHub username
+```
+
+#### Update Profile with Images
+```bash
+PUT /api/users/profile
+Content-Type: multipart/form-data
+Authorization: Bearer YOUR_JWT_TOKEN
+
+Form Data:
+- full_name: Updated full name
+- avatar: New profile picture
+- cover_image: New cover image
+- bio: Updated bio
+- location: Updated location
+- website: Updated website
+- social_links[twitter]: Updated Twitter handle
+- social_links[github]: Updated GitHub username
+```
+
+### Image Specifications
+
+- Supported formats: JPEG, PNG, GIF, WebP
+- Maximum file size: 10MB
+- Thumbnails are automatically generated in three sizes:
+  - Small: 150x150
+  - Medium: 300x300
+  - Large: 600x600
+
+### Security Considerations
+
+- All uploads require authentication
+- File types are validated using MIME detection
+- Files are stored in user-specific directories
+- Original filenames are sanitized
+- Secure file paths are enforced
+- Old media files are automatically deleted when replaced
 
 ### Media Management
 

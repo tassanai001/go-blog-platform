@@ -5,6 +5,7 @@ import (
     "fmt"
     "log"
     "net/http"
+    "path/filepath"
     "time"
 
     "github.com/gin-gonic/gin"
@@ -24,15 +25,17 @@ type UserHandler struct {
     resetTokens         *mongo.Collection
     jwtSecret          []byte
     emailService       *services.EmailService
+    mediaService       *services.MediaService
     baseURL           string
 }
 
-func NewUserHandler(db *mongo.Database, jwtSecret string, emailService *services.EmailService, baseURL string) *UserHandler {
+func NewUserHandler(db *mongo.Database, jwtSecret string, emailService *services.EmailService, mediaService *services.MediaService, baseURL string) *UserHandler {
     return &UserHandler{
         collection:    db.Collection("users"),
         resetTokens:   db.Collection("password_reset_tokens"),
         jwtSecret:     []byte(jwtSecret),
         emailService:  emailService,
+        mediaService:  mediaService,
         baseURL:      baseURL,
     }
 }
@@ -43,14 +46,31 @@ type LoginRequest struct {
 }
 
 type RegisterRequest struct {
-    Username string `json:"username" binding:"required"`
-    Email    string `json:"email" binding:"required,email"`
-    Password string `json:"password" binding:"required,min=6"`
-    Role     string `json:"role"`
+    Username    string               `form:"username" binding:"required"`
+    Password    string               `form:"password" binding:"required"`
+    Email       string               `form:"email" binding:"required,email"`
+    FullName    string               `form:"full_name" binding:"required"`
+    Avatar      *multipart.FileHeader `form:"avatar"`
+    CoverImage  *multipart.FileHeader `form:"cover_image"`
+    Bio         string               `form:"bio"`
+    Location    string               `form:"location"`
+    Website     string               `form:"website"`
+    SocialLinks models.SocialLinks   `form:"social_links"`
+    Role        string               `json:"role"`
 }
 
 type UpdateRoleRequest struct {
     Role string `json:"role" binding:"required"`
+}
+
+type UpdateProfileRequest struct {
+    FullName    string               `form:"full_name"`
+    Avatar      *multipart.FileHeader `form:"avatar"`
+    CoverImage  *multipart.FileHeader `form:"cover_image"`
+    Bio         string               `form:"bio"`
+    Location    string               `form:"location"`
+    Website     string               `form:"website"`
+    SocialLinks models.SocialLinks   `form:"social_links"`
 }
 
 type RequestPasswordResetRequest struct {
@@ -148,51 +168,282 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 
 func (h *UserHandler) Register(c *gin.Context) {
     var req RegisterRequest
-    if err := c.ShouldBindJSON(&req); err != nil {
+    if err := c.ShouldBind(&req); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
 
-    // Check if user already exists
-    ctx := context.Background()
+    // Check if username already exists
     var existingUser models.User
-    err := h.collection.FindOne(ctx, bson.M{"email": req.Email}).Decode(&existingUser)
+    err := h.collection.FindOne(context.Background(), bson.M{"username": req.Username}).Decode(&existingUser)
     if err == nil {
-        c.JSON(http.StatusConflict, gin.H{"error": "User already exists"})
-        return
-    }
-    if err != mongo.ErrNoDocuments {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Username already exists"})
         return
     }
 
-    // Create new user
-    user := models.User{
-        Username: req.Username,
-        Email:    req.Email,
-        Password: req.Password,
-        Role:     req.Role, // Will be set to default "reader" in BeforeInsert if empty
+    // Check if email already exists
+    err = h.collection.FindOne(context.Background(), bson.M{"email": req.Email}).Decode(&existingUser)
+    if err == nil {
+        c.JSON(http.StatusConflict, gin.H{"error": "Email already exists"})
+        return
     }
 
-    if err := user.BeforeInsert(ctx); err != nil {
+    // Hash password
+    hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+    if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
         return
     }
 
-    _, err = h.collection.InsertOne(ctx, user)
+    userID := primitive.NewObjectID()
+    now := time.Now()
+
+    // Create profile with media handling
+    profile := models.Profile{
+        ID:          primitive.NewObjectID(),
+        UserID:      userID,
+        FullName:    req.FullName,
+        Bio:         req.Bio,
+        Location:    req.Location,
+        Website:     req.Website,
+        SocialLinks: req.SocialLinks,
+        CreatedAt:   now,
+        UpdatedAt:   now,
+    }
+
+    // Handle avatar upload
+    if req.Avatar != nil {
+        if err := h.mediaService.ValidateFile(req.Avatar); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid avatar image: " + err.Error()})
+            return
+        }
+
+        filePath, thumbnails, err := h.mediaService.SaveFile(req.Avatar, userID.Hex())
+        if err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save avatar"})
+            return
+        }
+
+        media := &models.Media{
+            ID:        primitive.NewObjectID(),
+            UserID:    userID,
+            FileName:  req.Avatar.Filename,
+            FileType:  filepath.Ext(req.Avatar.Filename),
+            MimeType:  req.Avatar.Header.Get("Content-Type"),
+            Size:      req.Avatar.Size,
+            Path:      filePath,
+            CreatedAt: now,
+            UpdatedAt: now,
+        }
+
+        for _, thumb := range thumbnails {
+            media.Thumbnails = append(media.Thumbnails, models.Thumbnail{
+                Size: thumb.Size,
+                Path: thumb.Path,
+            })
+        }
+
+        profile.Avatar = media
+    }
+
+    // Handle cover image upload
+    if req.CoverImage != nil {
+        if err := h.mediaService.ValidateFile(req.CoverImage); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid cover image: " + err.Error()})
+            return
+        }
+
+        filePath, thumbnails, err := h.mediaService.SaveFile(req.CoverImage, userID.Hex())
+        if err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save cover image"})
+            return
+        }
+
+        media := &models.Media{
+            ID:        primitive.NewObjectID(),
+            UserID:    userID,
+            FileName:  req.CoverImage.Filename,
+            FileType:  filepath.Ext(req.CoverImage.Filename),
+            MimeType:  req.CoverImage.Header.Get("Content-Type"),
+            Size:      req.CoverImage.Size,
+            Path:      filePath,
+            CreatedAt: now,
+            UpdatedAt: now,
+        }
+
+        for _, thumb := range thumbnails {
+            media.Thumbnails = append(media.Thumbnails, models.Thumbnail{
+                Size: thumb.Size,
+                Path: thumb.Path,
+            })
+        }
+
+        profile.CoverImage = media
+    }
+
+    // Create user
+    user := models.User{
+        ID:           userID,
+        Username:     req.Username,
+        Email:        req.Email,
+        PasswordHash: string(hashedPassword),
+        Profile:      profile,
+        Role:         req.Role,
+        CreatedAt:    now,
+        UpdatedAt:    now,
+    }
+
+    _, err = h.collection.InsertOne(context.Background(), user)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
         return
     }
 
     c.JSON(http.StatusCreated, gin.H{
-        "message": "User registered successfully",
-        "user": gin.H{
-            "id":       user.ID,
-            "username": user.Username,
-            "email":    user.Email,
-            "role":     user.Role,
+        "id":       user.ID,
+        "username": user.Username,
+        "profile":  user.Profile,
+    })
+}
+
+func (h *UserHandler) UpdateProfile(c *gin.Context) {
+    userID, exists := c.Get("user_id")
+    if !exists {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+        return
+    }
+
+    var req UpdateProfileRequest
+    if err := c.ShouldBind(&req); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+
+    objID, _ := primitive.ObjectIDFromHex(userID.(string))
+
+    // Get existing user
+    var user models.User
+    err := h.collection.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&user)
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+        return
+    }
+
+    // Update basic profile fields
+    update := bson.M{
+        "$set": bson.M{
+            "profile.full_name":     req.FullName,
+            "profile.bio":           req.Bio,
+            "profile.location":      req.Location,
+            "profile.website":       req.Website,
+            "profile.social_links":  req.SocialLinks,
+            "profile.updated_at":    time.Now(),
         },
+    }
+
+    // Handle avatar update
+    if req.Avatar != nil {
+        // Delete old avatar if exists
+        if user.Profile.Avatar != nil {
+            _ = h.mediaService.DeleteFile(user.Profile.Avatar.Path)
+        }
+
+        if err := h.mediaService.ValidateFile(req.Avatar); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid avatar image: " + err.Error()})
+            return
+        }
+
+        filePath, thumbnails, err := h.mediaService.SaveFile(req.Avatar, userID.(string))
+        if err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save avatar"})
+            return
+        }
+
+        media := &models.Media{
+            ID:        primitive.NewObjectID(),
+            UserID:    objID,
+            FileName:  req.Avatar.Filename,
+            FileType:  filepath.Ext(req.Avatar.Filename),
+            MimeType:  req.Avatar.Header.Get("Content-Type"),
+            Size:      req.Avatar.Size,
+            Path:      filePath,
+            CreatedAt: time.Now(),
+            UpdatedAt: time.Now(),
+        }
+
+        for _, thumb := range thumbnails {
+            media.Thumbnails = append(media.Thumbnails, models.Thumbnail{
+                Size: thumb.Size,
+                Path: thumb.Path,
+            })
+        }
+
+        update["$set"].(bson.M)["profile.avatar"] = media
+    }
+
+    // Handle cover image update
+    if req.CoverImage != nil {
+        // Delete old cover image if exists
+        if user.Profile.CoverImage != nil {
+            _ = h.mediaService.DeleteFile(user.Profile.CoverImage.Path)
+        }
+
+        if err := h.mediaService.ValidateFile(req.CoverImage); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid cover image: " + err.Error()})
+            return
+        }
+
+        filePath, thumbnails, err := h.mediaService.SaveFile(req.CoverImage, userID.(string))
+        if err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save cover image"})
+            return
+        }
+
+        media := &models.Media{
+            ID:        primitive.NewObjectID(),
+            UserID:    objID,
+            FileName:  req.CoverImage.Filename,
+            FileType:  filepath.Ext(req.CoverImage.Filename),
+            MimeType:  req.CoverImage.Header.Get("Content-Type"),
+            Size:      req.CoverImage.Size,
+            Path:      filePath,
+            CreatedAt: time.Now(),
+            UpdatedAt: time.Now(),
+        }
+
+        for _, thumb := range thumbnails {
+            media.Thumbnails = append(media.Thumbnails, models.Thumbnail{
+                Size: thumb.Size,
+                Path: thumb.Path,
+            })
+        }
+
+        update["$set"].(bson.M)["profile.cover_image"] = media
+    }
+
+    result, err := h.collection.UpdateOne(context.Background(), bson.M{"_id": objID}, update)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update profile"})
+        return
+    }
+
+    if result.MatchedCount == 0 {
+        c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+        return
+    }
+
+    // Get updated user
+    var updatedUser models.User
+    err = h.collection.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&updatedUser)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch updated user"})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "id":       updatedUser.ID,
+        "username": updatedUser.Username,
+        "profile":  updatedUser.Profile,
     })
 }
 
