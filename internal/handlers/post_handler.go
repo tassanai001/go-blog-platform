@@ -2,9 +2,10 @@ package handlers
 
 import (
     "context"
+    "mime/multipart"
     "net/http"
-    "time"
     "path/filepath"
+    "time"
 
     "github.com/gin-gonic/gin"
     "go.mongodb.org/mongo-driver/bson"
@@ -13,7 +14,6 @@ import (
 
     "go-blog-platform/internal/models"
     "go-blog-platform/internal/services"
-    "mime/multipart"
 )
 
 type PostHandler struct {
@@ -391,8 +391,8 @@ func (h *PostHandler) ListDrafts(c *gin.Context) {
 
     ctx := context.Background()
     cursor, err := h.collection.Find(ctx, bson.M{
-        "user_id": userID.(string),
-        "published": false,
+        "author_id": userID.(string),
+        "status":    "draft",
     })
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch drafts"})
@@ -424,8 +424,8 @@ func (h *PostHandler) CreateDraft(c *gin.Context) {
     }
 
     post.ID = primitive.NewObjectID()
-    post.UserID = userID.(string)
-    post.Published = false // Ensure it's marked as unpublished
+    post.AuthorID = userID.(string)
+    post.Status = "draft" // Ensure it's marked as unpublished
     post.CreatedAt = time.Now()
     post.UpdatedAt = time.Now()
 

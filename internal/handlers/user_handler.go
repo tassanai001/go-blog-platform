@@ -4,19 +4,18 @@ import (
     "context"
     "fmt"
     "log"
+    "mime/multipart"
     "net/http"
     "path/filepath"
     "time"
 
     "github.com/gin-gonic/gin"
-    "github.com/golang-jwt/jwt/v5"
     "go.mongodb.org/mongo-driver/bson"
     "go.mongodb.org/mongo-driver/bson/primitive"
     "go.mongodb.org/mongo-driver/mongo"
     "golang.org/x/crypto/bcrypt"
 
     "go-blog-platform/internal/models"
-    "go-blog-platform/internal/constants"
     "go-blog-platform/internal/services"
 )
 
@@ -116,7 +115,7 @@ func (h *UserHandler) UpdateUserRole(c *gin.Context) {
 
     // Validate the new role
     switch req.Role {
-    case constants.RoleAdmin, constants.RoleAuthor, constants.RoleReader:
+    case "admin", "author", "reader":
         // Valid role
     default:
         c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role"})
@@ -283,14 +282,14 @@ func (h *UserHandler) Register(c *gin.Context) {
 
     // Create user
     user := models.User{
-        ID:           userID,
-        Username:     req.Username,
-        Email:        req.Email,
-        PasswordHash: string(hashedPassword),
-        Profile:      profile,
-        Role:         req.Role,
-        CreatedAt:    now,
-        UpdatedAt:    now,
+        ID:        userID,
+        Username:  req.Username,
+        Email:     req.Email,
+        Password:  string(hashedPassword),
+        Profile:   profile,
+        Role:      req.Role,
+        CreatedAt: now,
+        UpdatedAt: now,
     }
 
     _, err = h.collection.InsertOne(context.Background(), user)

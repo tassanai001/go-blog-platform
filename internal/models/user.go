@@ -3,20 +3,48 @@ package models
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 	"golang.org/x/crypto/bcrypt"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go-blog-platform/internal/constants"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type User struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
 	Username  string             `bson:"username" json:"username"`
 	Email     string             `bson:"email" json:"email"`
-	Password  string             `bson:"password" json:"-"` // "-" means this field won't be included in JSON responses
+	Password  string             `bson:"password" json:"-"`
 	Role      string             `bson:"role" json:"role"`
+	Profile   Profile            `bson:"profile" json:"profile"`
 	CreatedAt time.Time          `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time          `bson:"updated_at" json:"updated_at"`
+}
+
+type Profile struct {
+	ID          primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	UserID      primitive.ObjectID `bson:"user_id" json:"user_id"`
+	FullName    string             `bson:"full_name" json:"full_name"`
+	Bio         string             `bson:"bio,omitempty" json:"bio,omitempty"`
+	Avatar      *Media             `bson:"avatar,omitempty" json:"avatar,omitempty"`
+	CoverImage  *Media             `bson:"cover_image,omitempty" json:"cover_image,omitempty"`
+	Location    string             `bson:"location,omitempty" json:"location,omitempty"`
+	Website     string             `bson:"website,omitempty" json:"website,omitempty"`
+	SocialLinks SocialLinks        `bson:"social_links,omitempty" json:"social_links,omitempty"`
+	CreatedAt   time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt   time.Time          `bson:"updated_at" json:"updated_at"`
+}
+
+type Media struct {
+	// Add media fields here
+}
+
+type SocialLinks struct {
+	Twitter   string `bson:"twitter,omitempty" json:"twitter,omitempty"`
+	Facebook  string `bson:"facebook,omitempty" json:"facebook,omitempty"`
+	LinkedIn  string `bson:"linkedin,omitempty" json:"linkedin,omitempty"`
+	GitHub    string `bson:"github,omitempty" json:"github,omitempty"`
+	Instagram string `bson:"instagram,omitempty" json:"instagram,omitempty"`
 }
 
 // ValidateRole checks if the role is valid
