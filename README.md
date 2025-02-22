@@ -9,6 +9,7 @@ A RESTful blog platform built with Go, featuring role-based access control and M
 - Blog post management
 - MongoDB integration
 - RESTful API design
+- Media management
 
 ## Prerequisites
 
@@ -59,6 +60,150 @@ go run cmd/server/main.go
 - `GET /api/admin/users` - List all users
 - `PUT /api/admin/users/:id/role` - Update user role
 - `DELETE /api/admin/users/:id` - Delete user
+
+### Media Management
+
+The blog platform includes a comprehensive media management system that supports image uploads, automatic thumbnail generation, and metadata management.
+
+#### Features
+
+- Image upload and storage
+- Automatic thumbnail generation (small: 150x150, medium: 300x300, large: 600x600)
+- File type validation (JPEG, PNG, GIF, WebP)
+- Image optimization
+- Secure file storage
+- Media metadata management
+
+#### API Endpoints
+
+##### Upload Media
+```bash
+POST /api/media/upload
+Content-Type: multipart/form-data
+Authorization: Bearer YOUR_JWT_TOKEN
+
+Form Data:
+- file: File to upload (max 10MB)
+```
+
+##### List Media
+```bash
+GET /api/media/list
+Authorization: Bearer YOUR_JWT_TOKEN
+```
+
+##### Get Media Details
+```bash
+GET /api/media/:id
+Authorization: Bearer YOUR_JWT_TOKEN
+```
+
+##### Update Media Metadata
+```bash
+PUT /api/media/:id
+Content-Type: application/json
+Authorization: Bearer YOUR_JWT_TOKEN
+
+{
+  "title": "Image Title",
+  "description": "Image description",
+  "alt_text": "Alternative text",
+  "tags": ["nature", "landscape"]
+}
+```
+
+##### Delete Media
+```bash
+DELETE /api/media/:id
+Authorization: Bearer YOUR_JWT_TOKEN
+```
+
+#### Example Usage
+
+1. Upload an image:
+```bash
+curl -X POST http://localhost:8080/api/media/upload \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -F "file=@/path/to/image.jpg"
+```
+
+2. List all media:
+```bash
+curl -X GET http://localhost:8080/api/media/list \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+```
+
+3. Update metadata:
+```bash
+curl -X PUT http://localhost:8080/api/media/MEDIA_ID \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Sunset",
+    "description": "Beautiful sunset at the beach",
+    "alt_text": "Orange sun setting over ocean waves",
+    "tags": ["sunset", "beach", "nature"]
+  }'
+```
+
+#### Response Format
+
+```json
+{
+  "id": "media_id",
+  "user_id": "user_id",
+  "file_name": "image.jpg",
+  "file_type": ".jpg",
+  "mime_type": "image/jpeg",
+  "size": 1024,
+  "path": "path/to/file.jpg",
+  "url": "http://localhost:8080/media/path/to/file.jpg",
+  "thumbnails": [
+    {
+      "size": "small",
+      "width": 150,
+      "height": 150,
+      "path": "path/to/small.jpg",
+      "url": "http://localhost:8080/media/path/to/small.jpg"
+    },
+    // medium and large thumbnails...
+  ],
+  "metadata": {
+    "width": 1920,
+    "height": 1080,
+    "title": "Image Title",
+    "description": "Image description",
+    "alt_text": "Alternative text",
+    "tags": ["tag1", "tag2"]
+  },
+  "created_at": "2025-02-22T15:04:05Z",
+  "updated_at": "2025-02-22T15:04:05Z"
+}
+```
+
+#### Configuration
+
+The media system is configured through environment variables:
+
+```env
+# Base URL for media access
+BASE_URL=http://localhost:8080
+
+# Maximum file size (in bytes, default: 10MB)
+MAX_FILE_SIZE=10485760
+
+# Allowed file types
+ALLOWED_FILE_TYPES=image/jpeg,image/png,image/gif,image/webp
+```
+
+#### Security Considerations
+
+- Files are stored in user-specific directories
+- File types are validated using MIME type detection
+- File size is limited to prevent abuse
+- Thumbnails are generated asynchronously
+- Original filenames are sanitized
+- Secure file paths are enforced
 
 ## User Roles
 
