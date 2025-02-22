@@ -148,3 +148,61 @@ func (h *PostHandler) Delete(c *gin.Context) {
 
     c.Status(http.StatusNoContent)
 }
+
+// ListDrafts returns all draft posts for the current user
+func (h *PostHandler) ListDrafts(c *gin.Context) {
+    userID, exists := c.Get("user_id")
+    if !exists {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+        return
+    }
+
+    ctx := context.Background()
+    cursor, err := h.collection.Find(ctx, bson.M{
+        "user_id": userID.(string),
+        "published": false,
+    })
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch drafts"})
+        return
+    }
+    defer cursor.Close(ctx)
+
+    var drafts []models.Post
+    if err := cursor.All(ctx, &drafts); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode drafts"})
+        return
+    }
+
+    c.JSON(http.StatusOK, drafts)
+}
+
+// CreateDraft creates a new draft post
+func (h *PostHandler) CreateDraft(c *gin.Context) {
+    userID, exists := c.Get("user_id")
+    if !exists {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+        return
+    }
+
+    var post models.Post
+    if err := c.ShouldBindJSON(&post); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+
+    post.ID = primitive.NewObjectID()
+    post.UserID = userID.(string)
+    post.Published = false // Ensure it's marked as unpublished
+    post.CreatedAt = time.Now()
+    post.UpdatedAt = time.Now()
+
+    ctx := context.Background()
+    _, err := h.collection.InsertOne(ctx, post)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create draft"})
+        return
+    }
+
+    c.JSON(http.StatusCreated, post)
+}

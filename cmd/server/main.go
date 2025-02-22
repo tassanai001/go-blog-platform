@@ -44,15 +44,25 @@ func main() {
     // Initialize handlers
     postHandler := handlers.NewPostHandler(db)
     userHandler := handlers.NewUserHandler(db, cfg.JWT.Secret)
+    profileHandler := handlers.NewProfileHandler(db)
 
     // Public routes
     r.POST("/api/register", userHandler.Register)
     r.POST("/api/login", userHandler.Login)
+    r.GET("/api/profiles/:id", profileHandler.GetProfile) // Public profile view
 
     // Protected routes
     api := r.Group("/api")
     api.Use(middleware.AuthMiddleware([]byte(cfg.JWT.Secret)))
     {
+        // Profile routes
+        profile := api.Group("/profile")
+        {
+            profile.GET("/me", profileHandler.GetMyProfile)
+            profile.PUT("/me", profileHandler.UpdateProfile)
+            profile.DELETE("/me", profileHandler.DeleteProfile)
+        }
+
         // Reader routes (accessible by all authenticated users)
         posts := api.Group("/posts")
         {
